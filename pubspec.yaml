@@ -57,7 +57,8 @@ flutter:
   # included with your application, so that you can use the icons in
 
   assets:
-    - assets/fonts/
+    - assets/
+    - svgs/
     - Icons/
   fonts:
     - family: Poppins
