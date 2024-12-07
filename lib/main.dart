@@ -7,6 +7,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
+import 'dart:math';
 
 // Assuming you've created the service
 void main() async {
@@ -146,6 +147,7 @@ class MainPage extends StatelessWidget {
                       birthDate: '',
                       placeOfStudy: '',
                       cityOfLiving: '',
+                      id: Random().nextInt(10),
                     );
                     Navigator.push(
                       context,
@@ -277,6 +279,7 @@ class CreateNewUserPageState extends State<CreateNewUserPage> {
                           birthDate: _birthDateController.text,
                           placeOfStudy: _placeOfStudyController.text,
                           cityOfLiving: _cityOfLivingController.text,
+                          id: Random().nextInt(10),
                         );
 
                         // Save user to Firestore
@@ -440,6 +443,7 @@ class _FaceScanPageState extends State<FaceScanPage> {
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
   int _stage = 1;
+  List<double>? _faceEmbedding; // Temporary storage for face embeddings
 
   @override
   void initState() {
@@ -463,10 +467,26 @@ class _FaceScanPageState extends State<FaceScanPage> {
     super.dispose();
   }
 
-  void _onScanComplete(List<double> recognizedEmbedding) {
+  Future<void> _captureFaceEmbedding() async {
+    // Placeholder for capturing face embedding
+    // Replace this with actual AuraFace integration
+    _faceEmbedding = [0.1, 0.2, 0.3, 0.4]; // Simulated embedding
+    print("Face embedding captured: $_faceEmbedding");
+  }
+
+  void _onScanComplete() async {
+    await _captureFaceEmbedding();
+
+    if (_faceEmbedding == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Failed to capture face embedding")),
+      );
+      return;
+    }
+
     if (widget.isNewUser) {
-      // Save the new user's face embedding to Firestore
-      widget.user.faceEmbedding = recognizedEmbedding;
+      // Assign the face embedding to the new user
+      widget.user.faceEmbedding = _faceEmbedding;
       FirestoreService firestoreService = FirestoreService();
       firestoreService.saveUserToFirestore(widget.user).then((_) {
         Navigator.push(
@@ -479,13 +499,13 @@ class _FaceScanPageState extends State<FaceScanPage> {
       }).catchError((error) {
         print("Error saving user: $error");
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Error saving user")),
+          SnackBar(content: Text("Error saving user: $error")),
         );
       });
     } else {
       // Recognize existing user
       FirestoreService firestoreService = FirestoreService();
-      firestoreService.getUserByFaceEmbedding(recognizedEmbedding).then((user) {
+      firestoreService.getUserByFaceEmbedding(_faceEmbedding!).then((user) {
         if (user != null) {
           Navigator.push(
             context,
@@ -507,18 +527,12 @@ class _FaceScanPageState extends State<FaceScanPage> {
       _stage = 2; // Scanning phase
     });
 
-    // Simulate scanning process and retrieve embedding
+    // Simulate scanning process
     Future.delayed(const Duration(seconds: 3), () {
-      List<double> recognizedEmbedding = [
-        0.1,
-        0.2,
-        0.3,
-        0.4
-      ]; // Replace with actual embedding
       setState(() {
         _stage = 3; // Scan complete
       });
-      _onScanComplete(recognizedEmbedding); // Trigger the user lookup or save
+      _onScanComplete(); // Trigger the user lookup or save
     });
   }
 
@@ -748,7 +762,6 @@ class UserProfilePage extends StatefulWidget {
   const UserProfilePage({super.key, required this.user, required this.camera});
 
   @override
-  // ignore: library_private_types_in_public_api
   _UserProfilePageState createState() => _UserProfilePageState();
 }
 
@@ -780,6 +793,31 @@ class _UserProfilePageState extends State<UserProfilePage> {
     _placeOfStudyController.dispose();
     _cityOfLivingController.dispose();
     super.dispose();
+  }
+
+  Future<void> _saveChanges() async {
+    if (_formKey.currentState!.validate()) {
+      // Update the user object with new values
+      widget.user.name = _nameController.text;
+      widget.user.surname = _surnameController.text;
+      widget.user.birthDate = _birthDateController.text;
+      widget.user.placeOfStudy = _placeOfStudyController.text;
+      widget.user.cityOfLiving = _cityOfLivingController.text;
+
+      // Save updated user to Firestore
+      FirestoreService firestoreService = FirestoreService();
+      try {
+        await firestoreService.updateUserInFirestore(widget.user);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Changes saved successfully")),
+        );
+      } catch (error) {
+        print("Error updating user: $error");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error saving changes: $error")),
+        );
+      }
+    }
   }
 
   @override
@@ -837,7 +875,28 @@ class _UserProfilePageState extends State<UserProfilePage> {
               Center(
                 child: Container(
                   height: 48,
-                  width: 1000,
+                  width: 160,
+                  child: ElevatedButton.icon(
+                    onPressed: _saveChanges,
+                    icon: const Icon(Icons.save, color: Colors.white),
+                    label: const Text(
+                      'Save Changes',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1A6BD4),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(100.0),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Center(
+                child: Container(
+                  height: 48,
+                  width: 160,
                   child: ElevatedButton.icon(
                     onPressed: () {
                       Navigator.pushAndRemoveUntil(
@@ -998,6 +1057,45 @@ class FirestoreService {
     } catch (e) {
       print("Error retrieving user: $e");
       return null;
+    }
+  }
+
+  Future<User?> getUserById(int id) async {
+    try {
+      QuerySnapshot query = await FirebaseFirestore.instance
+          .collection('users')
+          .where('id', isEqualTo: id)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        return User.fromFirestore(
+            query.docs.first.data() as Map<String, dynamic>);
+      } else {
+        print("User not found");
+        return null;
+      }
+    } catch (e) {
+      print("Error retrieving user: $e");
+      return null;
+    }
+  }
+
+  Future<void> updateUserInFirestore(User user) async {
+    try {
+      QuerySnapshot query = await FirebaseFirestore.instance
+          .collection('users')
+          .where('id', isEqualTo: user.id)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        await query.docs.first.reference.update(user.toFirestore());
+        print("User updated successfully!");
+      } else {
+        print("User not found for update");
+      }
+    } catch (e) {
+      print("Error updating user: $e");
+      throw e;
     }
   }
 }

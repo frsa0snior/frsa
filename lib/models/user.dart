@@ -5,6 +5,7 @@ class User {
   String placeOfStudy;
   String cityOfLiving;
   List<double>? faceEmbedding;
+  int id;
 
   User({
     required this.name,
@@ -13,6 +14,7 @@ class User {
     required this.placeOfStudy,
     required this.cityOfLiving,
     this.faceEmbedding,
+    required this.id,
   });
 
   Map<String, dynamic> toFirestore() {
@@ -23,6 +25,7 @@ class User {
       'placeOfStudy': placeOfStudy,
       'cityOfLiving': cityOfLiving,
       'faceEmbedding': faceEmbedding,
+      'id': id,
     };
   }
 
@@ -34,6 +37,7 @@ class User {
       placeOfStudy: data['placeOfStudy'],
       cityOfLiving: data['cityOfLiving'],
       faceEmbedding: List<double>.from(data['faceEmbedding'] ?? []),
+      id: data['id'],
     );
   }
 }
