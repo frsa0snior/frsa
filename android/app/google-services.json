@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "692599636294",
+    "project_id": "frsa2-bc7e9",
+    "storage_bucket": "frsa2-bc7e9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:692599636294:android:cdd45d8cc0dcdf6d116547",
+        "android_client_info": {
+          "package_name": "com.example.frsa"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBjqGv43e1cGR8NLAavOz9KzsoCBAOn6Ok"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
