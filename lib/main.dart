@@ -8,26 +8,47 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'dart:math';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'dart:io';
+import 'dart:async';
 
-// Assuming you've created the service
-void main() async {
+Future<List<Face>> detectFaces(InputImage inputImage) async {
+  final options = FaceDetectorOptions(
+    enableContours: true,
+    enableLandmarks: true,
+  );
+
+  final faceDetector = FaceDetector(options: options);
+  final List<Face> faces = await faceDetector.processImage(inputImage);
+
+  faceDetector.close();
+  return faces;
+}
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final cameras = await availableCameras();
-  final firstCamera = cameras.first;
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  runApp(MyApp(camera: firstCamera));
-}
 
-Future<void> testFirestoreConnection() async {
-  try {
-    await FirebaseFirestore.instance
-        .collection('test')
-        .add({'message': 'Hello Firestore!'});
-    print('Test data added successfully!');
-  } catch (e) {
-    print('Error connecting to Firestore: $e');
+  // Obtain a list of the available cameras on the device.
+  final cameras = await availableCameras();
+
+  // Select the front camera, if available.
+  CameraDescription? frontCamera;
+  for (var camera in cameras) {
+    if (camera.lensDirection == CameraLensDirection.front) {
+      frontCamera = camera;
+      break;
+    }
+  }
+
+  // If a front camera is found, pass it to the app; otherwise, handle accordingly.
+  if (frontCamera != null) {
+    runApp(MyApp(camera: frontCamera));
+  } else {
+    // Handle the case where no front camera is found.
+    runApp(MyApp(camera: cameras.first)); // Default to the first camera.
   }
 }
 
@@ -282,23 +303,15 @@ class CreateNewUserPageState extends State<CreateNewUserPage> {
                           id: Random().nextInt(10),
                         );
 
-                        // Save user to Firestore
-                        saveUserToFirestore(user).then((_) {
-                          Navigator.push(
-                            context,
-                            _createRoute(FaceScanPage(
-                              user: user,
-                              camera: widget.camera,
-                              isNewUser: true,
-                            )),
-                          );
-                        }).catchError((error) {
-                          // Show an error message if saving fails
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                                content: Text("Error saving user: $error")),
-                          );
-                        });
+                        // Navigate to FaceScanPage with the user data
+                        Navigator.push(
+                          context,
+                          _createRoute(FaceScanPage(
+                            user: user,
+                            camera: widget.camera,
+                            isNewUser: true,
+                          )),
+                        );
                       }
                     },
                     icon: const Icon(Icons.person_add, color: Colors.white),
@@ -443,12 +456,19 @@ class _FaceScanPageState extends State<FaceScanPage> {
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
   int _stage = 1;
-  List<double>? _faceEmbedding; // Temporary storage for face embeddings
+  String _overlaySvg = 'svgs/Camera_Frame.svg'; // Default overlay
+  final String _tempImagePath =
+      'temp_face/temp_face.jpg'; // Path to store the temporary face image
+  Timer? _scanTimer;
+  Timer? _faceDetectionTimer;
+  bool _faceDetected =
+      false; // Flag to ensure only one image is captured per scan
+  bool _scanSuccess = false; // Flag to track scan success
+  bool _isDetecting = false; // Flag to track if detection is active
 
   @override
   void initState() {
     super.initState();
-    testFirestoreConnection();
     _initializeCamera();
   }
 
@@ -458,94 +478,141 @@ class _FaceScanPageState extends State<FaceScanPage> {
       ResolutionPreset.medium,
     );
 
-    _initializeControllerFuture = _controller.initialize();
+    _initializeControllerFuture = _controller.initialize().then((_) {
+      // Start face detection automatically
+      _startFaceDetection();
+    });
   }
 
   @override
   void dispose() {
+    _stopFaceDetection();
     _controller.dispose();
+    _scanTimer?.cancel();
+    _faceDetectionTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _captureFaceEmbedding() async {
-    // Placeholder for capturing face embedding
-    // Replace this with actual AuraFace integration
-    _faceEmbedding = [0.1, 0.2, 0.3, 0.4]; // Simulated embedding
-    print("Face embedding captured: $_faceEmbedding");
+  void _startFaceDetection() {
+    if (_isDetecting) return; // Prevent multiple detection loops
+    _isDetecting = true;
+
+    _faceDetectionTimer =
+        Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+      if (!_isDetecting) {
+        timer.cancel();
+        return;
+      }
+
+      try {
+        // Capture an image from the camera
+        final image = await _controller.takePicture();
+        final inputImage = InputImage.fromFilePath(image.path);
+
+        // Detect faces in the image
+        final List<Face> faces = await detectFaces(inputImage);
+
+        if (faces.isNotEmpty) {
+          if (!_faceDetected) {
+            _faceDetected = true;
+            setState(() {
+              _overlaySvg = 'svgs/Camera_Frame_Face_Detected.svg';
+            });
+
+            // Start a timer to move to stage 2 after 1 second
+            _scanTimer = Timer(const Duration(seconds: 1), () {
+              if (_faceDetected) {
+                _startScanning();
+              }
+            });
+          }
+        } else {
+          _faceDetected = false;
+          setState(() {
+            _overlaySvg = 'svgs/Camera_Frame_Face_Not_Detected.svg';
+          });
+          _scanTimer?.cancel(); // Stop scanning if face is not detected
+        }
+      } catch (e) {
+        print("Error during face detection: $e");
+      }
+    });
   }
 
-  void _onScanComplete() async {
-    await _captureFaceEmbedding();
+  void _stopFaceDetection() {
+    _isDetecting = false;
+    _faceDetectionTimer?.cancel();
+  }
 
-    if (_faceEmbedding == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Failed to capture face embedding")),
-      );
-      return;
+  void _startScanning() async {
+    setState(() {
+      _stage = 2; // Move to scanning stage
+    });
+
+    // Start a timer for the scanning process
+    _scanTimer = Timer(const Duration(seconds: 2), () {
+      if (_faceDetected) {
+        _scanSuccess = true; // Set success if face is detected for 2 seconds
+        _onScanComplete();
+      } else {
+        _scanSuccess = false; // Set failure if face is lost
+        setState(() {
+          _overlaySvg = 'svgs/Camera_Frame_Face_Not_Detected.svg';
+          _stage = 1; // Reset to initial stage if face is lost
+        });
+      }
+    });
+  }
+
+  void _onScanComplete() {
+    setState(() {
+      _stage = 3; // Move to completion stage
+    });
+
+    // Determine the outcome and update the overlay SVG and text
+    if (_scanSuccess) {
+      _overlaySvg = 'svgs/Camera_Frame_Face_Recognized.svg';
+    } else {
+      _overlaySvg = 'svgs/Camera_Frame_Face_Not_Recognized.svg';
     }
 
-    if (widget.isNewUser) {
-      // Assign the face embedding to the new user
-      widget.user.faceEmbedding = _faceEmbedding;
-      FirestoreService firestoreService = FirestoreService();
-      firestoreService.saveUserToFirestore(widget.user).then((_) {
-        Navigator.push(
-          context,
-          _createRoute(UserCreationResultPage(
-            isSuccess: true,
-            camera: widget.camera,
-          )),
-        );
-      }).catchError((error) {
-        print("Error saving user: $error");
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error saving user: $error")),
-        );
-      });
-    } else {
-      // Recognize existing user
-      FirestoreService firestoreService = FirestoreService();
-      firestoreService.getUserByFaceEmbedding(_faceEmbedding!).then((user) {
-        if (user != null) {
+    // Proceed to the next page after a short delay
+    Future.delayed(const Duration(seconds: 1, milliseconds: 500), () {
+      if (widget.isNewUser) {
+        // Save the new user to the database
+        FirestoreService firestoreService = FirestoreService();
+        firestoreService.saveUserToFirestore(widget.user).then((_) {
+          deleteTempImage(); // Delete the temporary image after saving
           Navigator.push(
             context,
-            _createRoute(UserProfilePage(user: user, camera: widget.camera)),
+            _createRoute(UserCreationResultPage(
+              isSuccess: _scanSuccess,
+              camera: widget.camera,
+            )),
           );
-        } else {
+        }).catchError((error) {
+          print("Error saving user: $error");
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("User not recognized in the system")),
+            SnackBar(content: Text("Error saving user: $error")),
           );
-        }
-      }).catchError((error) {
-        print("Error retrieving user: $error");
-      });
-    }
-  }
-
-  void _startScan() {
-    setState(() {
-      _stage = 2; // Scanning phase
-    });
-
-    // Simulate scanning process
-    Future.delayed(const Duration(seconds: 3), () {
-      setState(() {
-        _stage = 3; // Scan complete
-      });
-      _onScanComplete(); // Trigger the user lookup or save
+        });
+      } else {
+        Navigator.push(
+          context,
+          _createRoute(
+              UserProfilePage(user: widget.user, camera: widget.camera)),
+        );
+      }
     });
   }
 
-  String _getOverlaySvg() {
-    switch (_stage) {
-      case 2: // Scanning detected phase
-        return 'svgs/Camera_Frame_Face_Detected.svg';
-      case 3: // Completed (success or failure)
-        return widget.isNewUser
-            ? 'svgs/Camera_Frame_Face_Recognized.svg'
-            : 'svgs/Camera_Frame_Face_Not_Recognized.svg';
-      default: // Initial scanning frame
-        return 'svgs/Camera_Frame.svg';
+  void deleteTempImage() {
+    if (_tempImagePath.isNotEmpty) {
+      final file = File(_tempImagePath);
+      if (file.existsSync()) {
+        file.deleteSync();
+        print("Temporary image deleted: $_tempImagePath");
+      }
     }
   }
 
@@ -589,7 +656,7 @@ class _FaceScanPageState extends State<FaceScanPage> {
                                 height: 600, child: CameraPreview(_controller)),
                             Positioned.fill(
                               child: SvgPicture.asset(
-                                _getOverlaySvg(),
+                                _overlaySvg,
                                 fit: BoxFit
                                     .cover, // Ensure overlay matches preview size
                               ),
@@ -614,13 +681,13 @@ class _FaceScanPageState extends State<FaceScanPage> {
                             ? 'Please, look into the camera'
                             : _stage == 2
                                 ? 'Scanning...'
-                                : widget.isNewUser
-                                    ? 'Scan Successful!'
-                                    : 'Scan Failed!',
+                                : _scanSuccess
+                                    ? 'Scan completed Successfully!'
+                                    : 'Scan Failed',
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
-                          color: _stage == 3 && !widget.isNewUser
+                          color: _stage == 3 && !_scanSuccess
                               ? Colors.red
                               : Colors.black,
                         ),
@@ -633,13 +700,13 @@ class _FaceScanPageState extends State<FaceScanPage> {
                         child: ElevatedButton(
                           onPressed: () {
                             if (_stage == 1) {
-                              _startScan();
+                              _startFaceDetection();
                             } else if (_stage == 3) {
                               if (widget.isNewUser) {
                                 Navigator.push(
                                   context,
                                   _createRoute(UserCreationResultPage(
-                                    isSuccess: true,
+                                    isSuccess: _scanSuccess,
                                     camera: widget.camera,
                                   )),
                                 );
@@ -1095,7 +1162,7 @@ class FirestoreService {
       }
     } catch (e) {
       print("Error updating user: $e");
-      throw e;
+      rethrow;
     }
   }
 }
