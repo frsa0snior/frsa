@@ -466,6 +466,7 @@ class _FaceScanPageState extends State<FaceScanPage> {
       false; // Flag to ensure only one image is captured per scan
   bool _scanSuccess = false; // Flag to track scan success
   bool _isDetecting = false; // Flag to track if detection is active
+// Path to store the temporary face image
 
   @override
   void initState() {
@@ -480,18 +481,39 @@ class _FaceScanPageState extends State<FaceScanPage> {
     );
 
     _initializeControllerFuture = _controller.initialize().then((_) {
-      // Start face detection automatically
-      _startFaceDetection();
+      if (mounted) {
+        setState(() {});
+        _startFaceDetection();
+      }
     });
   }
 
   @override
   void dispose() {
+    // Make sure to dispose of the controller when leaving the page
     _stopFaceDetection();
     _controller.dispose();
     _scanTimer?.cancel();
     _faceDetectionTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final CameraController cameraController = _controller;
+
+    // App state changed before we got the chance to initialize.
+    if (!cameraController.value.isInitialized) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive) {
+      // Free up memory when camera not active
+      cameraController.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      // Reinitialize the camera with same properties
+      _initializeCamera();
+    }
   }
 
   void _startFaceDetection() {
@@ -520,6 +542,10 @@ class _FaceScanPageState extends State<FaceScanPage> {
             setState(() {
               _overlaySvg = 'svgs/Camera_Frame_Face_Detected.svg';
             });
+
+            // Stop the detection timer before starting the scan
+            _faceDetectionTimer?.cancel();
+            _isDetecting = false;
 
             // Start a timer to move to stage 2 after 1 second
             _scanTimer = Timer(const Duration(seconds: 1), () {
@@ -551,8 +577,13 @@ class _FaceScanPageState extends State<FaceScanPage> {
       _stage = 2; // Move to scanning stage
     });
 
-    // Capture the image
     try {
+      // Stop any ongoing detection
+      _stopFaceDetection();
+
+      // Wait a brief moment to ensure camera is stable
+      await Future.delayed(const Duration(milliseconds: 500));
+
       final image = await _controller.takePicture();
       print("Image captured successfully.");
 
@@ -568,19 +599,20 @@ class _FaceScanPageState extends State<FaceScanPage> {
       // Upload image to Firebase Storage
       String downloadURL = await _uploadImageToStorage(file);
 
-      // Store the download URL in Firestore as "faceEmbedding"
-      if (widget.isNewUser) {
-        FirestoreService firestoreService = FirestoreService();
-        await firestoreService.saveFaceEmbedding(widget.user.id, downloadURL);
-        print("Image URL sent to Firestore.");
-      }
+      // Update the user's faceEmbedding field with the URL
+      widget.user.faceEmbedding = downloadURL;
+      print("Face embedding URL updated in user object: $downloadURL");
 
-      // Proceed to the next stage
-      _scanSuccess = true;
+      // Set success and proceed to next stage
+      setState(() {
+        _scanSuccess = true;
+      });
       _onScanComplete();
     } catch (e) {
       print("Error capturing image: $e");
-      _scanSuccess = false;
+      setState(() {
+        _scanSuccess = false;
+      });
       _onScanComplete();
     }
   }
@@ -607,27 +639,25 @@ class _FaceScanPageState extends State<FaceScanPage> {
 
   void _onScanComplete() {
     setState(() {
-      _stage = 3; // Move to completion stage
+      _stage = 3;
     });
 
-    // Determine the outcome and update the overlay SVG and text
     if (_scanSuccess) {
       _overlaySvg = 'svgs/Camera_Frame_Face_Recognized.svg';
     } else {
       _overlaySvg = 'svgs/Camera_Frame_Face_Not_Recognized.svg';
     }
 
-    // Proceed to the next page after a short delay
     Future.delayed(const Duration(seconds: 1, milliseconds: 500), () {
       if (widget.isNewUser) {
-        // Save the new user to the database
         FirestoreService firestoreService = FirestoreService();
+        // Save user with the updated faceEmbedding
         firestoreService.saveUserToFirestore(widget.user).then((_) async {
           Directory appDocDir = await getApplicationDocumentsDirectory();
           String filePath = '${appDocDir.path}/temp_image.jpg';
+          deleteTempImage(filePath);
 
-          deleteTempImage(filePath); // Pass the file path to deleteTempImage
-          Navigator.push(
+          Navigator.pushReplacement(
             context,
             _createRoute(UserCreationResultPage(
               isSuccess: _scanSuccess,
@@ -641,7 +671,7 @@ class _FaceScanPageState extends State<FaceScanPage> {
           );
         });
       } else {
-        Navigator.push(
+        Navigator.pushReplacement(
           context,
           _createRoute(
               UserProfilePage(user: widget.user, camera: widget.camera)),
