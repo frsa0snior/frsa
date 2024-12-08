@@ -11,6 +11,9 @@ import 'dart:math';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'dart:io';
 import 'dart:async';
+import 'package:firebase_storage/firebase_storage.dart';
+//import 'dart:typed_data';
+import 'package:path_provider/path_provider.dart';
 
 Future<List<Face>> detectFaces(InputImage inputImage) async {
   final options = FaceDetectorOptions(
@@ -457,8 +460,6 @@ class _FaceScanPageState extends State<FaceScanPage> {
   late Future<void> _initializeControllerFuture;
   int _stage = 1;
   String _overlaySvg = 'svgs/Camera_Frame.svg'; // Default overlay
-  final String _tempImagePath =
-      'temp_face/temp_face.jpg'; // Path to store the temporary face image
   Timer? _scanTimer;
   Timer? _faceDetectionTimer;
   bool _faceDetected =
@@ -511,6 +512,7 @@ class _FaceScanPageState extends State<FaceScanPage> {
 
         // Detect faces in the image
         final List<Face> faces = await detectFaces(inputImage);
+        print("Faces detected: ${faces.length}");
 
         if (faces.isNotEmpty) {
           if (!_faceDetected) {
@@ -549,19 +551,58 @@ class _FaceScanPageState extends State<FaceScanPage> {
       _stage = 2; // Move to scanning stage
     });
 
-    // Start a timer for the scanning process
-    _scanTimer = Timer(const Duration(seconds: 2), () {
-      if (_faceDetected) {
-        _scanSuccess = true; // Set success if face is detected for 2 seconds
-        _onScanComplete();
-      } else {
-        _scanSuccess = false; // Set failure if face is lost
-        setState(() {
-          _overlaySvg = 'svgs/Camera_Frame_Face_Not_Detected.svg';
-          _stage = 1; // Reset to initial stage if face is lost
-        });
+    // Capture the image
+    try {
+      final image = await _controller.takePicture();
+      print("Image captured successfully.");
+
+      // Save the image to a temporary directory
+      Directory tempDir = await getTemporaryDirectory();
+      String tempPath = '${tempDir.path}/temp_face';
+      await Directory(tempPath).create(recursive: true);
+      String filePath =
+          '$tempPath/${widget.user.name}_${widget.user.surname}.jpg';
+      File file = File(filePath);
+      await file.writeAsBytes(await image.readAsBytes());
+
+      // Upload image to Firebase Storage
+      String downloadURL = await _uploadImageToStorage(file);
+
+      // Store the download URL in Firestore as "faceEmbedding"
+      if (widget.isNewUser) {
+        FirestoreService firestoreService = FirestoreService();
+        await firestoreService.saveFaceEmbedding(widget.user.id, downloadURL);
+        print("Image URL sent to Firestore.");
       }
-    });
+
+      // Proceed to the next stage
+      _scanSuccess = true;
+      _onScanComplete();
+    } catch (e) {
+      print("Error capturing image: $e");
+      _scanSuccess = false;
+      _onScanComplete();
+    }
+  }
+
+  Future<String> _uploadImageToStorage(File file) async {
+    try {
+      // Create a reference to the location you want to upload to in Firebase Storage
+      String fileName = '${widget.user.name}_${widget.user.surname}.jpg';
+      Reference ref =
+          FirebaseStorage.instance.ref().child('faceEmbedding/$fileName');
+
+      // Upload the file to Firebase Storage
+      await ref.putFile(file);
+
+      // Get the download URL
+      String downloadURL = await ref.getDownloadURL();
+      print('Upload successful. Download URL: $downloadURL');
+      return downloadURL;
+    } catch (e) {
+      print('Error occurred while uploading: $e');
+      rethrow;
+    }
   }
 
   void _onScanComplete() {
@@ -581,8 +622,11 @@ class _FaceScanPageState extends State<FaceScanPage> {
       if (widget.isNewUser) {
         // Save the new user to the database
         FirestoreService firestoreService = FirestoreService();
-        firestoreService.saveUserToFirestore(widget.user).then((_) {
-          deleteTempImage(); // Delete the temporary image after saving
+        firestoreService.saveUserToFirestore(widget.user).then((_) async {
+          Directory appDocDir = await getApplicationDocumentsDirectory();
+          String filePath = '${appDocDir.path}/temp_image.jpg';
+
+          deleteTempImage(filePath); // Pass the file path to deleteTempImage
           Navigator.push(
             context,
             _createRoute(UserCreationResultPage(
@@ -606,13 +650,11 @@ class _FaceScanPageState extends State<FaceScanPage> {
     });
   }
 
-  void deleteTempImage() {
-    if (_tempImagePath.isNotEmpty) {
-      final file = File(_tempImagePath);
-      if (file.existsSync()) {
-        file.deleteSync();
-        print("Temporary image deleted: $_tempImagePath");
-      }
+  void deleteTempImage(String filePath) {
+    final file = File(filePath);
+    if (file.existsSync()) {
+      file.deleteSync();
+      print("Temporary image deleted: $filePath");
     }
   }
 
@@ -1162,6 +1204,27 @@ class FirestoreService {
       }
     } catch (e) {
       print("Error updating user: $e");
+      rethrow;
+    }
+  }
+
+  Future<void> saveFaceEmbedding(int userId, String downloadURL) async {
+    try {
+      QuerySnapshot query = await FirebaseFirestore.instance
+          .collection('users')
+          .where('id', isEqualTo: userId)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        await query.docs.first.reference.update({
+          'faceEmbedding': downloadURL,
+        });
+        print("Face embedding URL saved successfully!");
+      } else {
+        print("User not found for saving face embedding");
+      }
+    } catch (e) {
+      print("Error saving face embedding: $e");
       rethrow;
     }
   }
