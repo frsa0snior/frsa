@@ -17,7 +17,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 
-
 Future<List<Face>> detectFaces(InputImage inputImage) async {
   final options = FaceDetectorOptions(
     enableContours: true,
@@ -1115,7 +1114,7 @@ class UserProfilePageState extends State<UserProfilePage> {
               Center(
                 child: Container(
                   height: 48,
-                  width: 160,
+                  width: 1000,
                   child: ElevatedButton.icon(
                     onPressed: _saveChanges,
                     icon: const Icon(Icons.save, color: Colors.white),
@@ -1136,7 +1135,7 @@ class UserProfilePageState extends State<UserProfilePage> {
               Center(
                 child: Container(
                   height: 48,
-                  width: 160,
+                  width: 1000,
                   child: ElevatedButton.icon(
                     onPressed: () {
                       Navigator.pushAndRemoveUntil(
