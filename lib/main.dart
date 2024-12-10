@@ -12,8 +12,11 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'dart:io';
 import 'dart:async';
 import 'package:firebase_storage/firebase_storage.dart';
-//import 'dart:typed_data';
+import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:image/image.dart' as img;
+
 
 Future<List<Face>> detectFaces(InputImage inputImage) async {
   final options = FaceDetectorOptions(
@@ -303,7 +306,7 @@ class CreateNewUserPageState extends State<CreateNewUserPage> {
                           birthDate: _birthDateController.text,
                           placeOfStudy: _placeOfStudyController.text,
                           cityOfLiving: _cityOfLivingController.text,
-                          id: Random().nextInt(10),
+                          id: 1000000 + Random().nextInt(9000000),
                         );
 
                         // Navigate to FaceScanPage with the user data
@@ -345,8 +348,8 @@ class CreateNewUserPageState extends State<CreateNewUserPage> {
         DateTime? pickedDate = await showDatePicker(
           context: context,
           initialDate: DateTime.now(),
-          firstDate: DateTime(1900), // Earliest selectable date
-          lastDate: DateTime.now(), // Latest selectable date
+          firstDate: DateTime(1900),
+          lastDate: DateTime.now(),
         );
 
         if (pickedDate != null) {
@@ -452,10 +455,10 @@ class FaceScanPage extends StatefulWidget {
   });
 
   @override
-  _FaceScanPageState createState() => _FaceScanPageState();
+  FaceScanPageState createState() => FaceScanPageState();
 }
 
-class _FaceScanPageState extends State<FaceScanPage> {
+class FaceScanPageState extends State<FaceScanPage> {
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
   int _stage = 1;
@@ -498,7 +501,6 @@ class _FaceScanPageState extends State<FaceScanPage> {
     super.dispose();
   }
 
-  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final CameraController cameraController = _controller;
 
@@ -572,44 +574,98 @@ class _FaceScanPageState extends State<FaceScanPage> {
     _faceDetectionTimer?.cancel();
   }
 
+  Future<List<double>> getFaceEmbedding(String imagePath) async {
+    try {
+      // Load the model
+      final interpreter = await Interpreter.fromAsset(
+          'assets/Primary_Recognition_float32.tflite');
+
+      // Read and process the image
+      final imageData = File(imagePath).readAsBytesSync();
+      final image = img.decodeImage(imageData);
+      if (image == null) throw Exception('Failed to decode image');
+
+      // Resize image to model input size (assuming 112x112)
+      final processedImage = img.copyResize(image, width: 112, height: 112);
+
+      // Convert image to float32 array and normalize
+      var inputArray = Float32List(1 * 112 * 112 * 3);
+      var pixelIndex = 0;
+      for (var y = 0; y < processedImage.height; y++) {
+        for (var x = 0; x < processedImage.width; x++) {
+          var pixel = processedImage.getPixel(x, y);
+          // Get RGB values directly from the pixel
+          final r = pixel.r;
+          final g = pixel.g;
+          final b = pixel.b;
+
+          // Normalize to [-0.5, 0.5] range
+          inputArray[pixelIndex] = (r / 255.0) - 0.5; // Red
+          inputArray[pixelIndex + 1] = (g / 255.0) - 0.5; // Green
+          inputArray[pixelIndex + 2] = (b / 255.0) - 0.5; // Blue
+          pixelIndex += 3;
+        }
+      }
+
+      // Reshape input array
+      var input = inputArray.reshape([1, 112, 112, 3]);
+
+      // Prepare output array
+      var output = List.filled(1 * 512, 0).reshape([1, 512]);
+
+      // Run inference
+      interpreter.run(input, output);
+
+      // Convert output to list of doubles
+      List<double> embedding = output[0].cast<double>();
+
+      interpreter.close();
+      return embedding;
+    } catch (e) {
+      print('Error getting face embedding: $e');
+      rethrow;
+    }
+  }
+
   void _startScanning() async {
     setState(() {
       _stage = 2; // Move to scanning stage
     });
 
     try {
-      // Stop any ongoing detection
       _stopFaceDetection();
-
-      // Wait a brief moment to ensure camera is stable
       await Future.delayed(const Duration(milliseconds: 500));
 
-      final image = await _controller.takePicture();
-      print("Image captured successfully.");
+      // Step 1: Take the picture
+      final XFile capturedImage = await _controller.takePicture();
+      print("Step 1: Image captured successfully");
 
-      // Save the image to a temporary directory
+      // Step 2: Save to temporary folder
       Directory tempDir = await getTemporaryDirectory();
       String tempPath = '${tempDir.path}/temp_face';
       await Directory(tempPath).create(recursive: true);
-      String filePath =
-          '$tempPath/${widget.user.name}_${widget.user.surname}.jpg';
-      File file = File(filePath);
-      await file.writeAsBytes(await image.readAsBytes());
+      String tempFilePath =
+          '$tempPath/${DateTime.now().millisecondsSinceEpoch}.jpg';
+      File tempFile = File(tempFilePath);
+      await tempFile.writeAsBytes(await capturedImage.readAsBytes());
+      print("Step 2: Image saved to temporary folder: $tempFilePath");
 
-      // Upload image to Firebase Storage
-      String downloadURL = await _uploadImageToStorage(file);
-
-      // Update the user's faceEmbedding field with the URL
-      widget.user.faceEmbedding = downloadURL;
-      print("Face embedding URL updated in user object: $downloadURL");
-
-      // Set success and proceed to next stage
-      setState(() {
-        _scanSuccess = true;
+      // Add timeout for the entire process
+      bool processCompleted = false;
+      Timer(const Duration(seconds: 10), () {
+        if (!processCompleted) {
+          print("Process timeout - moving to next stage");
+          setState(() {
+            _scanSuccess = false;
+          });
+          _onScanComplete();
+        }
       });
-      _onScanComplete();
+
+      await _processScanResult(tempFile);
+      processCompleted = true;
     } catch (e) {
-      print("Error capturing image: $e");
+      print("Error during scanning: $e");
       setState(() {
         _scanSuccess = false;
       });
@@ -617,24 +673,64 @@ class _FaceScanPageState extends State<FaceScanPage> {
     }
   }
 
-  Future<String> _uploadImageToStorage(File file) async {
-    try {
-      // Create a reference to the location you want to upload to in Firebase Storage
-      String fileName = '${widget.user.name}_${widget.user.surname}.jpg';
-      Reference ref =
-          FirebaseStorage.instance.ref().child('faceEmbedding/$fileName');
+  Future<void> _processScanResult(File? tempFile) async {
+    if (!widget.isNewUser) {
+      // Existing user recognition logic...
+    } else {
+      if (tempFile == null || !tempFile.existsSync()) {
+        print(
+            "Error: Image file is ${tempFile == null ? 'null' : 'not found at ${tempFile.path}'}");
+        setState(() {
+          _scanSuccess = false;
+        });
+        _onScanComplete();
+        return;
+      }
 
-      // Upload the file to Firebase Storage
-      await ref.putFile(file);
+      // Step 3: Upload to cloud storage
+      try {
+        String cloudFileName =
+            '${widget.user.id}_${widget.user.name}_${widget.user.surname}.jpg';
+        Reference storageRef = FirebaseStorage.instance
+            .ref()
+            .child('faceEmbedding/$cloudFileName');
 
-      // Get the download URL
-      String downloadURL = await ref.getDownloadURL();
-      print('Upload successful. Download URL: $downloadURL');
-      return downloadURL;
-    } catch (e) {
-      print('Error occurred while uploading: $e');
-      rethrow;
+        print("Step 3: Starting upload of file: ${tempFile.path}");
+        // Add metadata to the upload
+        final metadata = SettableMetadata(
+          contentType: 'image/jpeg',
+          customMetadata: {'userId': widget.user.id.toString()},
+        );
+        TaskSnapshot uploadTask = await storageRef.putFile(tempFile, metadata);
+        print("Step 3: Image uploaded to cloud storage");
+
+        // Step 4: Get the download URL
+        if (uploadTask.state == TaskState.success) {
+          String downloadURL = await storageRef.getDownloadURL();
+          print("Step 4: Got download URL: $downloadURL");
+
+          // Store URL in user object
+          widget.user.imageUrl = downloadURL;
+
+          // Step 5: Save user data to database
+          FirestoreService firestoreService = FirestoreService();
+          await firestoreService.saveUserToFirestore(widget.user);
+          print("Step 5: User data saved to database");
+
+          setState(() {
+            _scanSuccess = true;
+          });
+        } else {
+          throw Exception('Upload failed with state: ${uploadTask.state}');
+        }
+      } catch (e) {
+        print("Error in upload process: ${e.toString()}");
+        setState(() {
+          _scanSuccess = false;
+        });
+      }
     }
+    _onScanComplete();
   }
 
   void _onScanComplete() {
@@ -648,28 +744,19 @@ class _FaceScanPageState extends State<FaceScanPage> {
       _overlaySvg = 'svgs/Camera_Frame_Face_Not_Recognized.svg';
     }
 
-    Future.delayed(const Duration(seconds: 1, milliseconds: 500), () {
+    Future.delayed(const Duration(seconds: 1, milliseconds: 500), () async {
       if (widget.isNewUser) {
-        FirestoreService firestoreService = FirestoreService();
-        // Save user with the updated faceEmbedding
-        firestoreService.saveUserToFirestore(widget.user).then((_) async {
-          Directory appDocDir = await getApplicationDocumentsDirectory();
-          String filePath = '${appDocDir.path}/temp_image.jpg';
-          deleteTempImage(filePath);
+        Directory appDocDir = await getApplicationDocumentsDirectory();
+        String filePath = '${appDocDir.path}/temp_image.jpg';
+        deleteTempImage(filePath);
 
-          Navigator.pushReplacement(
-            context,
-            _createRoute(UserCreationResultPage(
-              isSuccess: _scanSuccess,
-              camera: widget.camera,
-            )),
-          );
-        }).catchError((error) {
-          print("Error saving user: $error");
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Error saving user: $error")),
-          );
-        });
+        Navigator.pushReplacement(
+          context,
+          _createRoute(UserCreationResultPage(
+            isSuccess: _scanSuccess,
+            camera: widget.camera,
+          )),
+        );
       } else {
         Navigator.pushReplacement(
           context,
@@ -686,6 +773,20 @@ class _FaceScanPageState extends State<FaceScanPage> {
       file.deleteSync();
       print("Temporary image deleted: $filePath");
     }
+  }
+
+  double calculateEuclideanDistance(
+      List<double> embedding1, List<double> embedding2) {
+    if (embedding1.length != embedding2.length) {
+      throw Exception('Embeddings must have same length');
+    }
+
+    double sumSquared = 0;
+    for (int i = 0; i < embedding1.length; i++) {
+      double diff = embedding1[i] - embedding2[i];
+      sumSquared += diff * diff;
+    }
+    return sqrt(sumSquared);
   }
 
   @override
@@ -901,10 +1002,10 @@ class UserProfilePage extends StatefulWidget {
   const UserProfilePage({super.key, required this.user, required this.camera});
 
   @override
-  _UserProfilePageState createState() => _UserProfilePageState();
+  UserProfilePageState createState() => UserProfilePageState();
 }
 
-class _UserProfilePageState extends State<UserProfilePage> {
+class UserProfilePageState extends State<UserProfilePage> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController;
   late final TextEditingController _surnameController;
