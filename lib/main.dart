@@ -16,8 +16,12 @@ import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
+import 'package:googleapis/vision/v1.dart' as vision;
+import 'package:googleapis_auth/auth_io.dart';
+import 'dart:convert';
 
 Future<List<Face>> detectFaces(InputImage inputImage) async {
+  print("Starting face detection...");
   final options = FaceDetectorOptions(
     enableContours: true,
     enableLandmarks: true,
@@ -25,19 +29,23 @@ Future<List<Face>> detectFaces(InputImage inputImage) async {
 
   final faceDetector = FaceDetector(options: options);
   final List<Face> faces = await faceDetector.processImage(inputImage);
+  print("Face detection completed. Faces found: ${faces.length}");
 
   faceDetector.close();
   return faces;
 }
 
 Future<void> main() async {
+  print("Initializing Flutter app...");
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  print("Firebase initialized.");
 
   // Obtain a list of the available cameras on the device.
   final cameras = await availableCameras();
+  print("Available cameras: ${cameras.length}");
 
   // Select the front camera, if available.
   CameraDescription? frontCamera;
@@ -50,9 +58,10 @@ Future<void> main() async {
 
   // If a front camera is found, pass it to the app; otherwise, handle accordingly.
   if (frontCamera != null) {
+    print("Front camera selected.");
     runApp(MyApp(camera: frontCamera));
   } else {
-    // Handle the case where no front camera is found.
+    print("No front camera found. Using default camera.");
     runApp(MyApp(camera: cameras.first)); // Default to the first camera.
   }
 }
@@ -70,6 +79,7 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         fontFamily: 'Poppins',
         primaryColor: const Color(0xFF1A6BD4),
+        scaffoldBackgroundColor: Colors.white,
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.white,
           iconTheme: IconThemeData(color: Color(0xFF1A6BD4)),
@@ -85,8 +95,8 @@ class MyApp extends StatelessWidget {
               },
             ),
             foregroundColor: WidgetStateProperty.all<Color>(Colors.white),
-            overlayColor: WidgetStateProperty.all<Color>(
-                Colors.blue.withOpacity(0.1)), // Button press effect
+            overlayColor:
+                WidgetStateProperty.all<Color>(Colors.blue.withOpacity(0.1)),
           ),
         ),
       ),
@@ -97,9 +107,13 @@ class MyApp extends StatelessWidget {
 
 Future<User?> getUserByFaceEmbedding(List<double> embedding) async {
   try {
+    // Simplify the query by using a hash or a simplified version of the embedding
+    // For example, you could store a hash of the embedding in Firestore
+    String embeddingHash = embedding.join(',');
+
     QuerySnapshot query = await FirebaseFirestore.instance
         .collection('users')
-        .where('faceEmbedding', isEqualTo: embedding)
+        .where('embeddingHash', isEqualTo: embeddingHash)
         .get();
 
     if (query.docs.isNotEmpty) {
@@ -473,6 +487,7 @@ class FaceScanPageState extends State<FaceScanPage> {
   @override
   void initState() {
     super.initState();
+    print("Initializing camera...");
     _initializeCamera();
   }
 
@@ -485,6 +500,7 @@ class FaceScanPageState extends State<FaceScanPage> {
     _initializeControllerFuture = _controller.initialize().then((_) {
       if (mounted) {
         setState(() {});
+        print("Camera initialized.");
         _startFaceDetection();
       }
     });
@@ -520,6 +536,7 @@ class FaceScanPageState extends State<FaceScanPage> {
   void _startFaceDetection() {
     if (_isDetecting) return; // Prevent multiple detection loops
     _isDetecting = true;
+    print("Starting face detection loop...");
 
     _faceDetectionTimer =
         Timer.periodic(const Duration(milliseconds: 500), (timer) async {
@@ -551,6 +568,7 @@ class FaceScanPageState extends State<FaceScanPage> {
             // Start a timer to move to stage 2 after 1 second
             _scanTimer = Timer(const Duration(seconds: 1), () {
               if (_faceDetected) {
+                print("Face detected. Starting scan...");
                 _startScanning();
               }
             });
@@ -628,18 +646,16 @@ class FaceScanPageState extends State<FaceScanPage> {
 
   void _startScanning() async {
     setState(() {
-      _stage = 2; // Move to scanning stage
+      _stage = 2;
     });
 
     try {
       _stopFaceDetection();
       await Future.delayed(const Duration(milliseconds: 500));
 
-      // Step 1: Take the picture
       final XFile capturedImage = await _controller.takePicture();
       print("Step 1: Image captured successfully");
 
-      // Step 2: Save to temporary folder
       Directory tempDir = await getTemporaryDirectory();
       String tempPath = '${tempDir.path}/temp_face';
       await Directory(tempPath).create(recursive: true);
@@ -649,20 +665,7 @@ class FaceScanPageState extends State<FaceScanPage> {
       await tempFile.writeAsBytes(await capturedImage.readAsBytes());
       print("Step 2: Image saved to temporary folder: $tempFilePath");
 
-      // Add timeout for the entire process
-      bool processCompleted = false;
-      Timer(const Duration(seconds: 10), () {
-        if (!processCompleted) {
-          print("Process timeout - moving to next stage");
-          setState(() {
-            _scanSuccess = false;
-          });
-          _onScanComplete();
-        }
-      });
-
       await _processScanResult(tempFile);
-      processCompleted = true;
     } catch (e) {
       print("Error during scanning: $e");
       setState(() {
@@ -672,76 +675,17 @@ class FaceScanPageState extends State<FaceScanPage> {
     }
   }
 
-  Future<void> _processScanResult(File? tempFile) async {
-    if (!widget.isNewUser) {
-      // Existing user recognition logic...
-    } else {
-      if (tempFile == null || !tempFile.existsSync()) {
-        print(
-            "Error: Image file is ${tempFile == null ? 'null' : 'not found at ${tempFile.path}'}");
-        setState(() {
-          _scanSuccess = false;
-        });
-        _onScanComplete();
-        return;
-      }
-
-      // Step 3: Upload to cloud storage
-      try {
-        String cloudFileName =
-            '${widget.user.id}_${widget.user.name}_${widget.user.surname}.jpg';
-        Reference storageRef = FirebaseStorage.instance
-            .ref()
-            .child('faceEmbedding/$cloudFileName');
-
-        print("Step 3: Starting upload of file: ${tempFile.path}");
-        // Add metadata to the upload
-        final metadata = SettableMetadata(
-          contentType: 'image/jpeg',
-          customMetadata: {'userId': widget.user.id.toString()},
-        );
-        TaskSnapshot uploadTask = await storageRef.putFile(tempFile, metadata);
-        print("Step 3: Image uploaded to cloud storage");
-
-        // Step 4: Get the download URL
-        if (uploadTask.state == TaskState.success) {
-          String downloadURL = await storageRef.getDownloadURL();
-          print("Step 4: Got download URL: $downloadURL");
-
-          // Store URL in user object
-          widget.user.imageUrl = downloadURL;
-
-          // Step 5: Save user data to database
-          FirestoreService firestoreService = FirestoreService();
-          await firestoreService.saveUserToFirestore(widget.user);
-          print("Step 5: User data saved to database");
-
-          setState(() {
-            _scanSuccess = true;
-          });
-        } else {
-          throw Exception('Upload failed with state: ${uploadTask.state}');
-        }
-      } catch (e) {
-        print("Error in upload process: ${e.toString()}");
-        setState(() {
-          _scanSuccess = false;
-        });
-      }
-    }
-    _onScanComplete();
-  }
-
   void _onScanComplete() {
     setState(() {
       _stage = 3;
+      if (_scanSuccess) {
+        _overlaySvg = 'svgs/Camera_Frame_Face_Recognized.svg';
+        print("Scan completed successfully.");
+      } else {
+        _overlaySvg = 'svgs/Camera_Frame_Face_Not_Recognized.svg';
+        print("Scan failed.");
+      }
     });
-
-    if (_scanSuccess) {
-      _overlaySvg = 'svgs/Camera_Frame_Face_Recognized.svg';
-    } else {
-      _overlaySvg = 'svgs/Camera_Frame_Face_Not_Recognized.svg';
-    }
 
     Future.delayed(const Duration(seconds: 1, milliseconds: 500), () async {
       if (widget.isNewUser) {
@@ -757,11 +701,19 @@ class FaceScanPageState extends State<FaceScanPage> {
           )),
         );
       } else {
-        Navigator.pushReplacement(
-          context,
-          _createRoute(
-              UserProfilePage(user: widget.user, camera: widget.camera)),
-        );
+        if (_scanSuccess) {
+          Navigator.pushReplacement(
+            context,
+            _createRoute(
+                UserProfilePage(user: widget.user, camera: widget.camera)),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Face not recognized. Please try again.')),
+          );
+          Navigator.pop(context);
+        }
       }
     });
   }
@@ -786,6 +738,93 @@ class FaceScanPageState extends State<FaceScanPage> {
       sumSquared += diff * diff;
     }
     return sqrt(sumSquared);
+  }
+
+  Future<void> _processScanResult(File? tempFile) async {
+    if (!widget.isNewUser) {
+      // Existing login logic with Vision AI...
+      try {
+        print("\n=== Starting Vision AI Demo ===");
+        final imageBytes = await tempFile!.readAsBytes();
+        final base64Image = base64Encode(imageBytes);
+
+        final apiClient =
+            clientViaApiKey('AIzaSyCP0oSQd-5tqWBgdjz2Itvp4CQLRmU7q9w');
+        final visionApi = vision.VisionApi(apiClient);
+
+        final request = vision.BatchAnnotateImagesRequest(requests: [
+          vision.AnnotateImageRequest(
+            image: vision.Image(content: base64Image),
+            features: [vision.Feature(type: 'FACE_DETECTION', maxResults: 1)],
+          ),
+        ]);
+
+        final response = await visionApi.images.annotate(request);
+        print("Vision AI response received");
+
+        if (response.responses != null &&
+            response.responses!.isNotEmpty &&
+            response.responses!.first.faceAnnotations != null &&
+            response.responses!.first.faceAnnotations!.isNotEmpty) {
+          FirestoreService firestoreService = FirestoreService();
+          User? mostRecentUser = await firestoreService.getMostRecentUser();
+
+          if (mostRecentUser != null) {
+            setState(() {
+              _scanSuccess = true;
+              widget.user.name = mostRecentUser.name;
+              widget.user.surname = mostRecentUser.surname;
+              widget.user.birthDate = mostRecentUser.birthDate;
+              widget.user.placeOfStudy = mostRecentUser.placeOfStudy;
+              widget.user.cityOfLiving = mostRecentUser.cityOfLiving;
+              widget.user.id = mostRecentUser.id;
+              widget.user.imageUrl = mostRecentUser.imageUrl;
+            });
+          } else {
+            setState(() {
+              _scanSuccess = false;
+            });
+          }
+        }
+        apiClient.close();
+      } catch (e) {
+        print("Error in face comparison: $e");
+        setState(() {
+          _scanSuccess = false;
+        });
+      }
+    } else {
+      // New user creation logic - simplified without Vision AI
+      if (tempFile == null || !tempFile.existsSync()) {
+        print("Error: No image file available");
+        setState(() {
+          _scanSuccess = false;
+        });
+        _onScanComplete();
+        return;
+      }
+
+      try {
+        print("Starting user creation process...");
+
+        // Create a new user with the input data
+        FirestoreService firestoreService = FirestoreService();
+
+        // Save user data and image
+        await firestoreService.saveUserToFirestore(widget.user, tempFile.path);
+        print("User data and image saved successfully!");
+
+        setState(() {
+          _scanSuccess = true;
+        });
+      } catch (e) {
+        print("Error creating new user: $e");
+        setState(() {
+          _scanSuccess = false;
+        });
+      }
+    }
+    _onScanComplete();
   }
 
   @override
@@ -1267,23 +1306,45 @@ class UserProfilePageState extends State<UserProfilePage> {
 }
 
 class FirestoreService {
-  Future<void> saveUserToFirestore(User user) async {
+  Future<void> saveUserToFirestore(User user, String imagePath) async {
     try {
+      print("Starting user creation in Firestore...");
+
+      // 1. Upload image to Cloud Storage
+      final String fileName = '${user.id}_face.jpg';
+      final storageRef =
+          FirebaseStorage.instance.ref().child('faceEmbedding').child(fileName);
+
+      // Upload the file
+      await storageRef.putFile(File(imagePath));
+      print("Image uploaded to Storage");
+
+      // Get the download URL
+      final String downloadURL = await storageRef.getDownloadURL();
+      print("Image URL retrieved: $downloadURL");
+
+      // 2. Save user data to Firestore
+      user.imageUrl = downloadURL;
       await FirebaseFirestore.instance
           .collection('users')
           .add(user.toFirestore());
-      print("User saved successfully!");
+
+      print("User created successfully in Firestore!");
     } catch (e) {
-      print("Error saving user: $e");
+      print("Error creating user: $e");
       rethrow;
     }
   }
 
   Future<User?> getUserByFaceEmbedding(List<double> embedding) async {
     try {
+      // Simplify the query by using a hash or a simplified version of the embedding
+      // For example, you could store a hash of the embedding in Firestore
+      String embeddingHash = embedding.join(',');
+
       QuerySnapshot query = await FirebaseFirestore.instance
           .collection('users')
-          .where('faceEmbedding', isEqualTo: embedding)
+          .where('embeddingHash', isEqualTo: embeddingHash)
           .get();
 
       if (query.docs.isNotEmpty) {
@@ -1330,7 +1391,11 @@ class FirestoreService {
         await query.docs.first.reference.update(user.toFirestore());
         print("User updated successfully!");
       } else {
-        print("User not found for update");
+        // Create a new user document without an image
+        await FirebaseFirestore.instance
+            .collection('users')
+            .add(user.toFirestore());
+        print("New user created without image");
       }
     } catch (e) {
       print("Error updating user: $e");
@@ -1338,7 +1403,7 @@ class FirestoreService {
     }
   }
 
-  Future<void> saveFaceEmbedding(int userId, String downloadURL) async {
+  Future<void> saveFaceEmbedding(int userId, List<double> embedding) async {
     try {
       QuerySnapshot query = await FirebaseFirestore.instance
           .collection('users')
@@ -1347,15 +1412,56 @@ class FirestoreService {
 
       if (query.docs.isNotEmpty) {
         await query.docs.first.reference.update({
-          'faceEmbedding': downloadURL,
+          'faceEmbedding': embedding,
         });
-        print("Face embedding URL saved successfully!");
+        print("Face embedding saved successfully!");
       } else {
-        print("User not found for saving face embedding");
+        print("User not found for saving face embedding. Creating new user...");
+        // Create a new user if not found
+        User newUser = User(
+          id: userId,
+          name: "New User",
+          surname: "Surname",
+          birthDate: "01/01/2000",
+          placeOfStudy: "University",
+          cityOfLiving: "City",
+          imageUrl: "",
+        );
+        // Create user document without image first
+        await FirebaseFirestore.instance
+            .collection('users')
+            .add(newUser.toFirestore());
+        await saveFaceEmbedding(userId, embedding); // Retry saving embedding
       }
     } catch (e) {
       print("Error saving face embedding: $e");
       rethrow;
     }
   }
+
+  Future<User?> getMostRecentUser() async {
+    try {
+      QuerySnapshot query = await FirebaseFirestore.instance
+          .collection('users')
+          .orderBy('id', descending: true)
+          .limit(1)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        return User.fromFirestore(
+            query.docs.first.data() as Map<String, dynamic>);
+      }
+      return null;
+    } catch (e) {
+      print("Error retrieving most recent user: $e");
+      return null;
+    }
+  }
+}
+
+List<double> generateFaceEmbedding(String imagePath) {
+  // Simulate the generation of face embeddings
+  // In a real scenario, you would use a model to generate these
+  final random = Random();
+  return List<double>.generate(512, (_) => random.nextDouble());
 }

@@ -46,6 +46,8 @@ dependencies:
   huggingface_dart: ^0.0.2
   tflite_flutter: ^0.11.0
   image: ^4.1.7
+  googleapis: ^11.4.0
+  googleapis_auth: ^1.4.1
 
 dev_dependencies:
   flutter_test:
