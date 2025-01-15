@@ -266,88 +266,90 @@ class CreateNewUserPageState extends State<CreateNewUserPage> {
               padding: const EdgeInsets.all(12.0),
               child: SvgPicture.asset(
                 'Icons/Logo.svg',
-                height: 36.0, // Adjust the height as needed
+                height: 36.0,
               ),
             ),
-            // Optional spacing between icon and title
           ],
         ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Create a new User',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Create a new User',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Please, fill in your personal information',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Color.fromARGB(255, 71, 71, 71),
+                const SizedBox(height: 8),
+                const Text(
+                  'Please, fill in your personal information',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Color.fromARGB(255, 71, 71, 71),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 40),
-              _buildCustomFormField('Your Name', _nameController),
-              const SizedBox(height: 20),
-              _buildCustomFormField('Your Surname', _surnameController),
-              const SizedBox(height: 20),
-              _buildCustomDateField('Birth Date', _birthDateController),
-              const SizedBox(height: 20),
-              _buildCustomFormField('University Name', _placeOfStudyController),
-              const SizedBox(height: 20),
-              _buildCustomFormField('City', _cityOfLivingController),
-              const SizedBox(height: 32),
-              Center(
-                child: Container(
-                  height: 48,
-                  width: 1000,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      if (_formKey.currentState!.validate()) {
-                        final user = User(
-                          name: _nameController.text,
-                          surname: _surnameController.text,
-                          birthDate: _birthDateController.text,
-                          placeOfStudy: _placeOfStudyController.text,
-                          cityOfLiving: _cityOfLivingController.text,
-                          id: 1000000 + Random().nextInt(9000000),
-                        );
+                const SizedBox(height: 40),
+                _buildCustomFormField('Your Name', _nameController),
+                const SizedBox(height: 20),
+                _buildCustomFormField('Your Surname', _surnameController),
+                const SizedBox(height: 20),
+                _buildCustomDateField('Birth Date', _birthDateController),
+                const SizedBox(height: 20),
+                _buildCustomFormField(
+                    'University Name', _placeOfStudyController),
+                const SizedBox(height: 20),
+                _buildCustomFormField('City', _cityOfLivingController),
+                const SizedBox(height: 32),
+                Center(
+                  child: Container(
+                    height: 48,
+                    width: 1000,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        if (_formKey.currentState!.validate()) {
+                          final user = User(
+                            name: _nameController.text,
+                            surname: _surnameController.text,
+                            birthDate: _birthDateController.text,
+                            placeOfStudy: _placeOfStudyController.text,
+                            cityOfLiving: _cityOfLivingController.text,
+                            id: 1000000 + Random().nextInt(9000000),
+                          );
 
-                        // Navigate to FaceScanPage with the user data
-                        Navigator.push(
-                          context,
-                          _createRoute(FaceScanPage(
-                            user: user,
-                            camera: widget.camera,
-                            isNewUser: true,
-                          )),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.person_add, color: Colors.white),
-                    label: const Text(
-                      'Create User',
-                      style: TextStyle(fontSize: 16),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF1A6BD4),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(100.0),
+                          // Navigate to FaceScanPage with the user data
+                          Navigator.push(
+                            context,
+                            _createRoute(FaceScanPage(
+                              user: user,
+                              camera: widget.camera,
+                              isNewUser: true,
+                            )),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.person_add, color: Colors.white),
+                      label: const Text(
+                        'Create User',
+                        style: TextStyle(fontSize: 16),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF1A6BD4),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(100.0),
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
